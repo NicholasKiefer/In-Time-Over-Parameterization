@@ -1,4 +1,3 @@
-from __future__ import print_function
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,6 +6,9 @@ import copy
 
 import numpy as np
 import math
+import logging
+
+logger = logging.getLogger("main")
 
 def add_sparse_args(parser):
     parser.add_argument('--sparse', action='store_true', help='Enable sparse mode. Default: True.')
@@ -48,10 +50,10 @@ class LinearDecay(object):
 
 class Masking(object):
     def __init__(self, optimizer, death_rate=0.3, growth_death_ratio=1.0, death_rate_decay=None, death_mode='magnitude', growth_mode='momentum', redistribution_mode='momentum', threshold=0.001, args=None):
-        growth_modes = ['random', 'momentum', 'momentum_neuron', 'gradient']
+        growth_modes = ['random', 'momentum', 'momentum_neuron', 'gradient', "smallworld"]
         if growth_mode not in growth_modes:
-            print('Growth mode: {0} not supported!'.format(growth_mode))
-            print('Supported modes are:', str(growth_modes))
+            logger.info('Growth mode: {0} not supported!'.format(growth_mode))
+            logger.info('Supported modes are:', str(growth_modes))
 
         self.args = args
         self.device = torch.device("cuda")
@@ -89,7 +91,7 @@ class Masking(object):
                     self.baseline_nonzero += (self.masks[name] != 0).sum().int().item()
 
         elif mode == 'lottery_ticket':
-            print('initialize by lottery ticket')
+            logger.info('initialize by lottery ticket')
             self.baseline_nonzero = 0
             weight_abs = []
             for module in self.modules:
@@ -120,7 +122,7 @@ class Masking(object):
                     self.baseline_nonzero += weight.numel()*density
 
         elif mode == 'ERK':
-            print('initialize by ERK')
+            logger.info('initialize by ERK')
             total_params = 0
             for name, weight in self.masks.items():
                 total_params += weight.numel()
@@ -170,7 +172,7 @@ class Masking(object):
                     is_epsilon_valid = False
                     for mask_name, mask_raw_prob in raw_probabilities.items():
                         if mask_raw_prob == max_prob:
-                            print(f"Sparsity of var:{mask_name} had to be set to 0.")
+                            logger.info(f"Sparsity of var:{mask_name} had to be set to 0.")
                             dense_layers.add(mask_name)
                 else:
                     is_epsilon_valid = True
@@ -185,13 +187,13 @@ class Masking(object):
                 else:
                     probability_one = epsilon * raw_probabilities[name]
                     density_dict[name] = probability_one
-                print(
+                logger.info(
                     f"layer: {name}, shape: {mask.shape}, density: {density_dict[name]}"
                 )
                 self.masks[name][:] = (torch.rand(mask.shape) < density_dict[name]).float().data.cuda()
 
                 total_nonzero += density_dict[name] * mask.numel()
-            print(f"Overall sparsity {total_nonzero / total_params}")
+            logger.info(f"Overall sparsity {total_nonzero / total_params}")
 
         self.apply_mask()
         self.fired_masks = copy.deepcopy(self.masks) # used for ITOP
@@ -200,13 +202,13 @@ class Masking(object):
         total_size = 0
         for name, weight in self.masks.items():
             total_size  += weight.numel()
-        print('Total Model parameters:', total_size)
+        logger.info('Total Model parameters:', total_size)
 
         sparse_size = 0
         for name, weight in self.masks.items():
             sparse_size += (weight != 0).sum().int().item()
 
-        print('Total parameters under sparsity level of {0}: {1}'.format(self.density, sparse_size / total_size))
+        logger.info('Total parameters under sparsity level of {0}: {1}'.format(self.density, sparse_size / total_size))
 
 
     def step(self):
@@ -229,38 +231,38 @@ class Masking(object):
             self.names.append(name)
             self.masks[name] = torch.zeros_like(tensor, dtype=torch.float32, requires_grad=False).cuda()
 
-        print('Removing biases...')
+        logger.info('Removing biases...')
         self.remove_weight_partial_name('bias')
-        print('Removing 2D batch norms...')
+        logger.info('Removing 2D batch norms...')
         self.remove_type(nn.BatchNorm2d)
-        print('Removing 1D batch norms...')
+        logger.info('Removing 1D batch norms...')
         self.remove_type(nn.BatchNorm1d)
         self.init(mode=sparse_init, density=density)
 
 
     def remove_weight(self, name):
         if name in self.masks:
-            print('Removing {0} of size {1} = {2} parameters.'.format(name, self.masks[name].shape,
+            logger.info('Removing {0} of size {1} = {2} parameters.'.format(name, self.masks[name].shape,
                                                                       self.masks[name].numel()))
             self.masks.pop(name)
         elif name + '.weight' in self.masks:
-            print('Removing {0} of size {1} = {2} parameters.'.format(name, self.masks[name + '.weight'].shape,
+            logger.info('Removing {0} of size {1} = {2} parameters.'.format(name, self.masks[name + '.weight'].shape,
                                                                       self.masks[name + '.weight'].numel()))
             self.masks.pop(name + '.weight')
         else:
-            print('ERROR', name)
+            logger.info('ERROR', name)
 
     def remove_weight_partial_name(self, partial_name):
         removed = set()
         for name in list(self.masks.keys()):
             if partial_name in name:
 
-                print('Removing {0} of size {1} with {2} parameters...'.format(name, self.masks[name].shape,
+                logger.info('Removing {0} of size {1} with {2} parameters...'.format(name, self.masks[name].shape,
                                                                                    np.prod(self.masks[name].shape)))
                 removed.add(name)
                 self.masks.pop(name)
 
-        print('Removed {0} layers.'.format(len(removed)))
+        logger.info('Removed {0} layers.'.format(len(removed)))
 
         i = 0
         while i < len(self.names):
@@ -309,13 +311,13 @@ class Masking(object):
         total_size = 0
         for name, weight in self.masks.items():
             total_size += weight.numel()
-        print('Total Model parameters:', total_size)
+        logger.info('Total Model parameters:', total_size)
 
         sparse_size = 0
         for name, weight in self.masks.items():
             sparse_size += (weight != 0).sum().int().item()
 
-        print('Total parameters under sparsity level of {0}: {1} after epoch of {2}'.format(self.density, sparse_size / total_size, epoch))
+        logger.info('Total parameters under sparsity level of {0}: {1} after epoch of {2}'.format(self.density, sparse_size / total_size, epoch))
 
     def truncate_weights(self):
 
@@ -358,6 +360,12 @@ class Masking(object):
 
                 elif self.growth_mode == 'gradient':
                     new_mask = self.gradient_growth(name, new_mask, weight)
+
+                elif self.growth_mode == "smallworld":
+                    new_mask = self.sw_growth(name, new_mask, weight)
+                
+                elif self.growth_mode == "spectral":
+                    new_mask = self.spectral_growth(name, new_mask, weight)
 
                 new_nonzero = new_mask.sum().item()
 
@@ -483,8 +491,44 @@ class Masking(object):
         new_mask.data.view(-1)[idx[:total_regrowth]] = 1.0
 
         return new_mask
+    
+    def sw_growth(self, name, new_mask, weight):
+        total_regrowth = self.num_remove[name]
+        A = weight
+        # logger.info(weight.shape)
+        n_out, n_in = A.shape
+        deg_out = A.sum(1)
+        deg_in = A.sum(0)
+        M = A @ A.T
+        proj_deg = M.sum(1)
+        w = deg_out / (proj_deg + 1e-8)
+        B = A * w.unsqueeze(1)
+        S_sw = M @ B
+        # S_sw = M @ (A * (deg_in / (deg_in.sum() + 1e-8)).unsqueeze(0))
+        S_sw[A!=0] = 0.
+        y, idx = torch.sort(S_sw.abs().flatten(), descending=True)
+        new_mask.data.view(-1)[idx[:total_regrowth]] = 1.0
+        return new_mask
+    
+    def spectral_growth(self, name, new_mask, weight):
+        total_regrowth = self.num_remove[name]
+        A = (weight == 0.).float()
+        deg_out = A.sum(1)
+        deg_in = A.sum(0)
+        D_in_inv = 1.0 / (deg_in + 1e-8)
+        L_out = torch.diag(deg_out) - A @ torch.diag(D_in_inv) @ A.T
+        L_in = torch.diag(deg_in) - A.T @ torch.diag(1.0 / (deg_out + 1e-8)) @ A
 
+        ev_out, evecs_out = torch.linalg.eigh(L_out)
+        ev_in, evecs_in = torch.linalg.eigh(L_in)
+        f_out = evecs_out[:, 1]
+        f_in = evecs_in[:, 1]
+        S_sp = (f_out.unsqueeze(1) - f_in.unsqueeze(0)) ** 2
+        y, idx = torch.sort(S_sp.abs().flatten(), descending=True)
+        new_mask.data.view(-1)[idx[:total_regrowth]] = 1.0
 
+    def swsp_growth(self, name, new_mask, weight):
+        pass
 
     def momentum_neuron_growth(self, name, new_mask, weight):
         total_regrowth = self.num_remove[name]
@@ -537,13 +581,13 @@ class Masking(object):
                 mask = self.masks[name]
                 num_nonzeros = (mask != 0).sum().item()
                 val = '{0}: {1}->{2}, density: {3:.3f}'.format(name, self.name2nonzeros[name], num_nonzeros, num_nonzeros/float(mask.numel()))
-                print(val)
+                logger.info(val)
 
 
         for module in self.modules:
             for name, tensor in module.named_parameters():
                 if name not in self.masks: continue
-                print('Death rate: {0}\n'.format(self.death_rate))
+                logger.info('Death rate: {0}\n'.format(self.death_rate))
                 break
 
     def fired_masks_update(self):
@@ -557,7 +601,7 @@ class Masking(object):
                 ntotal_fired_weights += float(self.fired_masks[name].sum().item())
                 ntotal_weights += float(self.fired_masks[name].numel())
                 layer_fired_weights[name] = float(self.fired_masks[name].sum().item())/float(self.fired_masks[name].numel())
-                print('Layerwise percentage of the fired weights of', name, 'is:', layer_fired_weights[name])
+                logger.info('Layerwise percentage of the fired weights of', name, 'is:', layer_fired_weights[name])
         total_fired_weights = ntotal_fired_weights/ntotal_weights
-        print('The percentage of the total fired weights is:', total_fired_weights)
+        logger.info('The percentage of the total fired weights is:', total_fired_weights)
         return layer_fired_weights, total_fired_weights
